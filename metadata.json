@@ -1,0 +1,10 @@
+{
+  "name": "Asistente de Tareas",
+  "description": "Automatización con voz para buscar tareas en Google Sheets y actualizarlas de manera anual o mensual.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

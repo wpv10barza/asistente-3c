@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.*
+credentials/
+service-account.json
+*.pem
+*.key
+state/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
