@@ -3,46 +3,39 @@ import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import { DeviceCommandStore, normalizeDeviceCommand, verifyDeviceToken } from "./server/deviceCommands.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
 const ai = new GoogleGenAI({ apiKey: apiKey || "" });
+const deviceCommands = new DeviceCommandStore();
 
 const FIELD_RULES = {
-  nombre: { column: "F", header: "Nombre", type: "text", maxLength: 100 },
-  tipo_tarea: { column: "G", header: "TipoTarea", type: "text" },
+  item_mantenible: { column: "B", header: "ItemMantenible", type: "catalog" },
+  modo_falla: { column: "C", header: "ModoDeFalla", type: "catalog" },
   restriccion: { column: "H", header: "Restriccion", type: "text" },
   limites_aceptables: { column: "I", header: "LimitesAceptables", type: "long_text" },
   comentarios_condicionales: { column: "J", header: "ComentariosCondicionales", type: "long_text" },
   origen: { column: "K", header: "Origen", type: "text" },
-  frecuencia: { column: "L", header: "Frecuencia", type: "positive_number" },
+  frecuencia: { column: "L", header: "Frecuencia", type: "positive_integer" },
   unidad_tiempo: { column: "M", header: "UnidadTiempo", type: "time_unit" },
-  especialidad: { column: "N", header: "Especialidad", type: "text" },
-  labour1: { column: "O", header: "Labour1", type: "text" },
-  labour1_cantidad: { column: "P", header: "Labour1Cantidad", type: "positive_number" },
-  labour1_horas: { column: "Q", header: "Labour1Horas", type: "positive_number" },
-  labour2: { column: "R", header: "Labour2", type: "text" },
-  labour2_cantidad: { column: "S", header: "Labour2Cantidad", type: "positive_number" },
-  labour2_horas: { column: "T", header: "Labour2Horas", type: "positive_number" },
-  labour3: { column: "U", header: "Labour3", type: "text" },
-  labour3_cantidad: { column: "V", header: "Labour3Cantidad", type: "positive_number" },
-  labour3_horas: { column: "W", header: "Labour3Horas", type: "positive_number" },
-  labour4: { column: "X", header: "Labour4", type: "text" },
-  labour4_cantidad: { column: "Y", header: "Labour4Cantidad", type: "positive_number" },
-  labour4_horas: { column: "Z", header: "Labour4Horas", type: "positive_number" },
-  eliminar: { column: "AF", header: "Eliminar", type: "delete_mark" }
+  especialidad: { column: "N", header: "Especialidad", type: "catalog" },
+  labour1: { column: "O", header: "Labour1", type: "catalog" }
 } as const;
 
 type FieldKey = keyof typeof FIELD_RULES;
 
-function normalizeOperationValue(field: FieldKey, rawValue: unknown): string | number {
+function normalizeComparable(value: unknown) {
+  return String(value ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeOperationValue(field: FieldKey, rawValue: unknown, detectedCatalogs: Partial<Record<FieldKey, string[]>>): string | number {
   const rule = FIELD_RULES[field];
   const text = String(rawValue ?? "").trim();
 
-  if (rule.type === "positive_number") {
-    const normalized = text.replace(",", ".");
-    const value = Number(normalized);
-    if (!Number.isFinite(value) || value < 0) throw new Error(`${rule.header} debe ser un numero mayor o igual a cero.`);
+  if (rule.type === "positive_integer") {
+    const value = Number(text);
+    if (!Number.isInteger(value) || value < 1) throw new Error(`${rule.header} debe ser un entero mayor o igual a uno.`);
     return value;
   }
 
@@ -60,15 +53,16 @@ function normalizeOperationValue(field: FieldKey, rawValue: unknown): string | n
     return mapped;
   }
 
-  if (rule.type === "delete_mark") {
-    return /^(x|eliminar|borrar|si|sí)$/i.test(text) ? "X" : "";
-  }
-
-  if (field === "nombre" && text.length > 100) {
-    throw new Error("Nombre supera 100 caracteres. Debe resumirse tecnicamente sin truncar ni eliminar codigos.");
-  }
-
   if (!text) throw new Error(`${rule.header} no puede quedar vacio.`);
+  if (rule.type === "long_text" && /(\.\.\.|…|\betc\.?\b)/i.test(text)) {
+    throw new Error(`${rule.header} debe contener el texto completo, sin puntos suspensivos ni etcetera.`);
+  }
+  if (rule.type === "catalog") {
+    const catalog = detectedCatalogs[field] || [];
+    const match = catalog.find(value => normalizeComparable(value) === normalizeComparable(text));
+    if (!match) throw new Error(`${rule.header} debe coincidir con un valor ya existente en la hoja.`);
+    return match;
+  }
   return text;
 }
 
@@ -76,6 +70,68 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
   app.use(express.json({ limit: "1mb" }));
+
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "asistente-3c",
+      device_api_configured: Boolean(process.env.ESP32_API_TOKEN),
+    });
+  });
+
+  app.get("/api/device/v1/health", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "asistente-3c-device-api",
+      accepts_commands: Boolean(process.env.ESP32_API_TOKEN) || process.env.ALLOW_INSECURE_DEVICE_API === "true",
+      requires_human_confirmation: true,
+    });
+  });
+
+  app.post("/api/device/v1/commands", (req, res) => {
+    try {
+      const configuredToken = process.env.ESP32_API_TOKEN;
+      const allowInsecure = process.env.ALLOW_INSECURE_DEVICE_API === "true";
+      const bearer = req.get("authorization")?.replace(/^Bearer\s+/i, "");
+      const candidateToken = req.get("x-3c-device-token") || bearer;
+
+      if (!configuredToken && !allowInsecure) {
+        return res.status(503).json({ error: "ESP32_API_TOKEN no esta configurado en el servidor." });
+      }
+      if (configuredToken && !verifyDeviceToken(configuredToken, candidateToken)) {
+        return res.status(401).json({ error: "Token del dispositivo invalido." });
+      }
+
+      const input = normalizeDeviceCommand(req.body);
+      const queued = deviceCommands.enqueue(input);
+      return res.status(queued.duplicate ? 200 : 202).json({
+        command_id: queued.command.id,
+        request_id: queued.command.request_id,
+        status: queued.command.status,
+        duplicate: queued.duplicate,
+        requires_human_confirmation: true,
+        message: "Comando recibido. Abra el Asistente 3C para revisar y confirmar los cambios.",
+      });
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message || "Comando del dispositivo invalido." });
+    }
+  });
+
+  app.get("/api/device/v1/commands/pending", (req, res) => {
+    const afterId = String(req.query.after || "").trim() || undefined;
+    const command = deviceCommands.latestPending(afterId);
+    res.json({ command });
+  });
+
+  app.post("/api/device/v1/commands/:id/result", (req, res) => {
+    const status = req.body?.status;
+    if (status !== "applied" && status !== "rejected") {
+      return res.status(400).json({ error: "status debe ser applied o rejected." });
+    }
+    const command = deviceCommands.update(req.params.id, status, req.body?.result);
+    if (!command) return res.status(404).json({ error: "Comando no encontrado o vencido." });
+    return res.json({ command });
+  });
 
   app.get("/api/config", (_req, res) => {
     try {
@@ -98,6 +154,7 @@ async function startServer() {
     try {
       const text = String(req.body?.text || "").trim();
       const detectedHeaders = req.body?.detectedHeaders || {};
+      const detectedCatalogs = req.body?.detectedCatalogs || {};
       if (!text) return res.status(400).json({ error: "Text is required" });
       if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY no esta configurada." });
 
@@ -112,23 +169,24 @@ REGLAS INMUTABLES:
 - La tarea se localiza por Nombre en columna F, o por TareaId si el usuario lo dice explicitamente.
 - No inventes columnas, encabezados, IDs ni valores.
 - Solo puedes modificar los campos permitidos: ${allowedFields}.
-- Columnas A:E, AA:AE estan bloqueadas y nunca se modifican.
+- Solo se modifican B, C, H, I, J, K, L, M, N y O. Todas las demas columnas estan bloqueadas.
 - "mensual" significa frecuencia=1 y unidad_tiempo="Mes", salvo que el usuario indique otro numero.
 - "anual" significa frecuencia=1 y unidad_tiempo="año", salvo que el usuario indique otro numero.
 - "cada N meses" significa frecuencia=N y unidad_tiempo="Mes".
 - "cada N años" significa frecuencia=N y unidad_tiempo="año".
 - Si pide cambiar limite, por que/porque, criterio aceptable o aceptacion, usa limites_aceptables (I).
 - Si pide comentario, instruccion, procedimiento u observacion condicional, usa comentarios_condicionales (J).
-- Si pide horas de la tarea o HH base del Labour1, usa labour1_horas (Q). No calcules HH si faltan cantidad y HH total.
-- Si pide cantidad de personas del Labour1, usa labour1_cantidad (P).
-- Para borrar una estrategia, no borres la fila: marca eliminar (AF) con X.
 - Conserva completo el texto descriptivo. No uses "...", "…" ni "etc.".
-- Si el nombre nuevo excede 100 caracteres, marca requiere_revision=true; no lo trunques.
+- ItemMantenible, ModoDeFalla, Especialidad y Labour1 deben usar exactamente un valor existente en sus catalogos.
+- Frecuencia debe ser un numero entero mayor o igual a 1.
 - Si falta tarea o valor, devuelve requiere_revision=true y explica el motivo.
 - Puedes devolver varias operaciones para una misma tarea.
 
 ENCABEZADOS DETECTADOS EN LA HOJA:
 ${JSON.stringify(detectedHeaders)}
+
+CATALOGOS EXISTENTES PERMITIDOS:
+${JSON.stringify(detectedCatalogs)}
 
 COMANDO:
 ${JSON.stringify(text)}`;
@@ -175,7 +233,7 @@ ${JSON.stringify(text)}`;
           campo: op.campo,
           columna_actualizar: rule.column,
           encabezado: rule.header,
-          valor_actualizar: normalizeOperationValue(op.campo, op.valor),
+          valor_actualizar: normalizeOperationValue(op.campo, op.valor, detectedCatalogs),
           razon: op.razon || ""
         };
       });
