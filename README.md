@@ -62,7 +62,22 @@ reenvío de puerto de Windows y permita TCP/3000 en el firewall de la red privad
 ## Ejecución
 
 ```bash
-npm install
+cd ~/projects/asistente-3c
+npm ci
+cp -n .env.example .env
+nano .env
 npm run lint
+npm test
 npm run dev
 ```
+
+También puede usar el iniciador validado para WSL:
+
+```bash
+chmod +x scripts/run-wsl.sh
+./scripts/run-wsl.sh
+```
+
+El servidor carga `.env` mediante `dotenv/config` y escucha en `0.0.0.0:3000`.
+Desde el ESP‑Hi use la IP LAN del equipo, mientras que las pruebas ejecutadas
+dentro de WSL pueden utilizar `http://127.0.0.1:3000`.
