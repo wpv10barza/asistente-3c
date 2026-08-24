@@ -1,0 +1,17 @@
+{
+  "protocol_version": "1.0",
+  "transport": "HTTP over trusted LAN",
+  "health_path": "/api/device/v1/health",
+  "command_path": "/api/device/v1/commands",
+  "authentication_header": "X-3C-Device-Token",
+  "request": {
+    "required": ["device_id", "request_id", "text"],
+    "device_id_max_length": 64,
+    "request_id_max_length": 96,
+    "text_max_length": 1000
+  },
+  "accepted_status_codes": [200, 202],
+  "accepted_state": "pending_confirmation",
+  "direct_sheet_write": false,
+  "requires_human_confirmation": true
+}

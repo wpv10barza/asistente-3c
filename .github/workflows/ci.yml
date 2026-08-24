@@ -23,6 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: node -e "JSON.parse(require('fs').readFileSync('contract/device-command-v1.json','utf8'))"
       - run: npm run lint
       - run: npm test
       - run: npm run build

@@ -1,9 +1,11 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import { DeviceCommandStore, normalizeDeviceCommand, verifyDeviceToken } from "./server/deviceCommands.js";
+import { DeviceCommandStore } from "./server/deviceCommands.js";
+import { registerDeviceApi } from "./server/deviceApi.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
@@ -71,67 +73,7 @@ async function startServer() {
   const PORT = Number(process.env.PORT || 3000);
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/api/health", (_req, res) => {
-    res.json({
-      ok: true,
-      service: "asistente-3c",
-      device_api_configured: Boolean(process.env.ESP32_API_TOKEN),
-    });
-  });
-
-  app.get("/api/device/v1/health", (_req, res) => {
-    res.json({
-      ok: true,
-      service: "asistente-3c-device-api",
-      accepts_commands: Boolean(process.env.ESP32_API_TOKEN) || process.env.ALLOW_INSECURE_DEVICE_API === "true",
-      requires_human_confirmation: true,
-    });
-  });
-
-  app.post("/api/device/v1/commands", (req, res) => {
-    try {
-      const configuredToken = process.env.ESP32_API_TOKEN;
-      const allowInsecure = process.env.ALLOW_INSECURE_DEVICE_API === "true";
-      const bearer = req.get("authorization")?.replace(/^Bearer\s+/i, "");
-      const candidateToken = req.get("x-3c-device-token") || bearer;
-
-      if (!configuredToken && !allowInsecure) {
-        return res.status(503).json({ error: "ESP32_API_TOKEN no esta configurado en el servidor." });
-      }
-      if (configuredToken && !verifyDeviceToken(configuredToken, candidateToken)) {
-        return res.status(401).json({ error: "Token del dispositivo invalido." });
-      }
-
-      const input = normalizeDeviceCommand(req.body);
-      const queued = deviceCommands.enqueue(input);
-      return res.status(queued.duplicate ? 200 : 202).json({
-        command_id: queued.command.id,
-        request_id: queued.command.request_id,
-        status: queued.command.status,
-        duplicate: queued.duplicate,
-        requires_human_confirmation: true,
-        message: "Comando recibido. Abra el Asistente 3C para revisar y confirmar los cambios.",
-      });
-    } catch (error: any) {
-      return res.status(400).json({ error: error.message || "Comando del dispositivo invalido." });
-    }
-  });
-
-  app.get("/api/device/v1/commands/pending", (req, res) => {
-    const afterId = String(req.query.after || "").trim() || undefined;
-    const command = deviceCommands.latestPending(afterId);
-    res.json({ command });
-  });
-
-  app.post("/api/device/v1/commands/:id/result", (req, res) => {
-    const status = req.body?.status;
-    if (status !== "applied" && status !== "rejected") {
-      return res.status(400).json({ error: "status debe ser applied o rejected." });
-    }
-    const command = deviceCommands.update(req.params.id, status, req.body?.result);
-    if (!command) return res.status(404).json({ error: "Comando no encontrado o vencido." });
-    return res.json({ command });
-  });
+  registerDeviceApi(app, deviceCommands);
 
   app.get("/api/config", (_req, res) => {
     try {
@@ -139,7 +81,7 @@ async function startServer() {
       const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
       res.json({
         clientId: config.oAuthClientId,
-        spreadsheetId: process.env.SPREADSHEET_ID || config.spreadsheetId || "1tLNo0_xjtmWKM9Y7PcChFut8S0w0kMKeAvFi9zg52gA",
+        spreadsheetId: process.env.SPREADSHEET_ID || config.spreadsheetId || "",
         sheetName: process.env.SHEET_NAME || "Data",
         headerRow: Number(process.env.HEADER_ROW || 4),
         searchColumn: "F"
