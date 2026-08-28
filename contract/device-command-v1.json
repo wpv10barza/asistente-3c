@@ -3,6 +3,7 @@
   "transport": "HTTP over trusted LAN",
   "health_path": "/api/device/v1/health",
   "command_path": "/api/device/v1/commands",
+  "status_path": "/api/device/v1/commands/{command_id}",
   "authentication_header": "X-3C-Device-Token",
   "request": {
     "required": ["device_id", "request_id", "text"],
@@ -12,6 +13,8 @@
   },
   "accepted_status_codes": [200, 202],
   "accepted_state": "pending_confirmation",
+  "device_status_polling": true,
+  "device_status_authentication": true,
   "direct_sheet_write": false,
   "requires_human_confirmation": true
 }

@@ -87,6 +87,11 @@ export class DeviceCommandStore {
     return afterIndex >= 0 ? pending[afterIndex + 1] ?? null : pending[pending.length - 1];
   }
 
+  get(id: string) {
+    this.prune();
+    return this.commands.find(command => command.id === id) ?? null;
+  }
+
   update(id: string, status: Exclude<DeviceCommandStatus, "pending_confirmation">, result?: string) {
     this.prune();
     const command = this.commands.find(item => item.id === id);

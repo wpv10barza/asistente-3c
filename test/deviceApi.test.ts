@@ -32,6 +32,7 @@ test("expone health y mantiene confirmacion humana", async () => {
     assert.equal(body.accepts_commands, true);
     assert.equal(body.requires_human_confirmation, true);
     assert.equal(body.protocol_version, "1.0");
+    assert.equal(body.supports_status_polling, true);
   });
 });
 
@@ -60,6 +61,22 @@ test("rechaza token incorrecto y acepta reintento idempotente", async () => {
     const acceptedBody = await accepted.json();
     assert.equal(acceptedBody.status, "pending_confirmation");
     assert.equal(acceptedBody.requires_human_confirmation, true);
+    assert.equal(
+      acceptedBody.status_path,
+      `/api/device/v1/commands/${acceptedBody.command_id}`,
+    );
+
+    const unauthorizedStatus = await fetch(
+      `${baseUrl}${acceptedBody.status_path}`,
+    );
+    assert.equal(unauthorizedStatus.status, 401);
+
+    const pendingStatus = await fetch(
+      `${baseUrl}${acceptedBody.status_path}`,
+      { headers: { "x-3c-device-token": "token-ci" } },
+    );
+    assert.equal(pendingStatus.status, 200);
+    assert.equal((await pendingStatus.json()).command.status, "pending_confirmation");
 
     const duplicate = await send();
     assert.equal(duplicate.status, 200);
@@ -82,6 +99,14 @@ test("rechaza token incorrecto y acepta reintento idempotente", async () => {
     );
     assert.equal(applied.status, 200);
     assert.equal((await applied.json()).command.status, "applied");
+
+    const appliedStatus = await fetch(
+      `${baseUrl}${acceptedBody.status_path}`,
+      { headers: { "x-3c-device-token": "token-ci" } },
+    );
+    const appliedStatusBody = await appliedStatus.json();
+    assert.equal(appliedStatus.status, 200);
+    assert.equal(appliedStatusBody.command.status, "applied");
+    assert.equal(appliedStatusBody.command.result, "Vista previa confirmada");
   });
 });
-

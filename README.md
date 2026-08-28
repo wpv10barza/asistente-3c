@@ -13,7 +13,8 @@ Aplicación React + Express que interpreta comandos de voz o texto y actualiza G
 - Catálogos preexistentes para ItemMantenible, ModoDeFalla, Especialidad y Labour1.
 - Frecuencia entera mayor o igual a uno, unidades canónicas y texto descriptivo completo sin `...`, `…` ni `etc.`.
 - Configuración de spreadsheet, hoja y fila de encabezados mediante variables de entorno.
-- API local para ESP-Hi/ESP32 con autenticación, idempotencia y cola de comandos.
+- API local para ESP-Hi C3 y panel ESP32-4848S040 con autenticación,
+  idempotencia, cola de comandos y consulta del resultado.
 - Vista previa obligatoria y confirmación humana antes de escribir en Google Sheets.
 
 ## Variables de entorno
@@ -46,6 +47,10 @@ El firmware consulta `GET /api/device/v1/health` y envía órdenes a
 Incluya el token en `X-3C-Device-Token`. La respuesta `202` solo indica que la
 orden quedó pendiente: la persona debe abrir la interfaz, revisar la vista
 previa y confirmar. El ESP32 nunca escribe directamente en Google Sheets.
+
+La respuesta incluye `status_path`. El panel táctil consulta esa ruta con el
+mismo token hasta recibir `pending_confirmation`, `applied` o `rejected`, de
+modo que la pantalla refleja la decisión tomada en WSL.
 
 Para acceder desde la red local, el servidor ya escucha en `0.0.0.0`. Configure
 en el firmware la IPv4 LAN de Windows, por ejemplo

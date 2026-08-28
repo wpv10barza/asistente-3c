@@ -35,11 +35,13 @@ test("mantiene idempotencia y requiere confirmacion", () => {
   assert.equal(repeated.duplicate, true);
   assert.equal(repeated.command.id, first.command.id);
   assert.equal(store.latestPending()?.status, "pending_confirmation");
+  assert.equal(store.get(first.command.id)?.id, first.command.id);
 
   const applied = store.update(first.command.id, "applied", "Fila 10 actualizada");
   assert.equal(applied?.status, "applied");
   assert.equal(store.latestPending(), null);
 
   now += 61_000;
+  assert.equal(store.get(first.command.id), null);
   assert.equal(store.update(first.command.id, "rejected"), null);
 });
