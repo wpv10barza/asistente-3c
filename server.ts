@@ -6,11 +6,13 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { DeviceCommandStore } from "./server/deviceCommands.js";
 import { registerDeviceApi } from "./server/deviceApi.js";
+import { AnalyticalReviewStore } from "./server/reviewControl.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
 const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 const deviceCommands = new DeviceCommandStore();
+const reviewStore = new AnalyticalReviewStore();
 
 const FIELD_RULES = {
   item_mantenible: { column: "B", header: "ItemMantenible", type: "catalog" },
@@ -89,6 +91,44 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "No se pudo cargar la configuracion." });
+    }
+  });
+
+  app.post("/api/review/proposals", (req, res) => {
+    try {
+      const proposal = reviewStore.propose({
+        row: Number(req.body?.row),
+        matched: String(req.body?.matched || "").trim(),
+        operations: req.body?.operations || [],
+        externalCommandId: req.body?.externalCommandId ? String(req.body.externalCommandId) : undefined,
+      });
+      res.status(201).json(proposal);
+    } catch (error: any) {
+      res.status(409).json({ error: error.message || "No se pudo guardar la propuesta." });
+    }
+  });
+
+  app.get("/api/review/proposals/:id", (req, res) => {
+    try {
+      res.json(reviewStore.get(req.params.id));
+    } catch (error: any) {
+      res.status(404).json({ error: error.message || "Propuesta no encontrada." });
+    }
+  });
+
+  app.post("/api/review/proposals/:id/approve", (req, res) => {
+    try {
+      res.json(reviewStore.approve(req.params.id));
+    } catch (error: any) {
+      res.status(409).json({ error: error.message || "La propuesta no puede aprobarse." });
+    }
+  });
+
+  app.post("/api/review/proposals/:id/reject", (req, res) => {
+    try {
+      res.json(reviewStore.reject(req.params.id));
+    } catch (error: any) {
+      res.status(404).json({ error: error.message || "Propuesta no encontrada." });
     }
   });
 
