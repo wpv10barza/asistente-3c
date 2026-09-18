@@ -5,7 +5,7 @@ import { Mic, MicOff, LogIn, CheckCircle2, AlertCircle, Loader2, Send } from 'lu
 
 type AppConfig = { clientId: string; spreadsheetId: string; sheetName: string; headerRow: number; searchColumn: string };
 type Operation = { campo: string; columna_actualizar: string; encabezado: string; valor_actualizar: string | number; razon?: string };
-type PendingPlan = { row: number; matched: string; operations: Operation[]; externalCommandId?: string };
+type PendingPlan = { row: number; matched: string; operations: Operation[]; externalCommandId?: string; reviewProposalId?: string };
 type DeviceCommand = { id: string; device_id: string; text: string; created_at: string };
 
 const normalizeText = (value: unknown) => String(value ?? '')
@@ -91,7 +91,25 @@ function MainApp({ token, config }: { token: string; config: AppConfig }) {
       const found = findUniqueRow(searchData.values || [], searchValue, dataStartRow);
       if (!found.row) throw new Error(found.error);
 
-      setPendingPlan({ row: found.row, matched: found.matched || searchValue, operations: data.operaciones, externalCommandId });
+      const reviewResponse = await fetch('/api/review/proposals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          row: found.row,
+          matched: found.matched || searchValue,
+          operations: data.operaciones,
+          externalCommandId,
+        }),
+      });
+      const reviewData = await reviewResponse.json();
+      if (!reviewResponse.ok) throw new Error(reviewData.error || 'No se pudo reservar la revisión analítica.');
+      setPendingPlan({
+        row: found.row,
+        matched: found.matched || searchValue,
+        operations: data.operaciones,
+        externalCommandId,
+        reviewProposalId: reviewData.id,
+      });
       setStatus({ type: 'preview', message: `Vista previa lista para la fila ${found.row}. Revise los cambios y confirme para escribir.` });
     } catch (error: any) {
       console.error(error); setStatus({ type: 'error', message: error.message || 'Ocurrió un error inesperado.' });
@@ -116,18 +134,29 @@ function MainApp({ token, config }: { token: string; config: AppConfig }) {
       for (const operation of pendingPlan.operations) {
         await sheetsFetch(`${operation.columna_actualizar}${pendingPlan.row}`, { method: 'PUT', body: JSON.stringify({ values: [[operation.valor_actualizar]] }) });
       }
+      if (pendingPlan.reviewProposalId) {
+        const reviewResponse = await fetch(`/api/review/proposals/${encodeURIComponent(pendingPlan.reviewProposalId)}/approve`, { method: 'POST' });
+        const reviewData = await reviewResponse.json();
+        if (!reviewResponse.ok) throw new Error(reviewData.error || 'No se pudo cerrar la revisión analítica.');
+      }
       const message = `Fila ${pendingPlan.row} actualizada: ${pendingPlan.matched}. Se aplicaron ${pendingPlan.operations.length} cambio(s).`;
       setLastOperations(pendingPlan.operations);
       await reportDeviceResult(pendingPlan.externalCommandId, 'applied', message);
       setPendingPlan(null);
       setStatus({ type: 'success', message });
     } catch (error: any) {
+      if (pendingPlan.reviewProposalId) {
+        await fetch(`/api/review/proposals/${encodeURIComponent(pendingPlan.reviewProposalId)}/reject`, { method: 'POST' }).catch(() => undefined);
+      }
       console.error(error); setStatus({ type: 'error', message: error.message || 'No se pudieron aplicar los cambios.' });
     }
   };
 
   const rejectPendingPlan = async () => {
     if (!pendingPlan) return;
+    if (pendingPlan.reviewProposalId) {
+      await fetch(`/api/review/proposals/${encodeURIComponent(pendingPlan.reviewProposalId)}/reject`, { method: 'POST' }).catch(() => undefined);
+    }
     await reportDeviceResult(pendingPlan.externalCommandId, 'rejected', 'El usuario rechazo la vista previa.');
     setPendingPlan(null);
     setStatus({ type: 'idle', message: '' });
@@ -193,9 +222,22 @@ function LoginButton({ setToken }: { setToken: (token: string) => void }) {
 }
 
 export default function App() {
-  const [config, setConfig] = useState<AppConfig | null>(null); const [token, setToken] = useState<string | null>(null); const [error, setError] = useState('');
-  useEffect(() => { fetch('/api/config').then(r => r.json()).then(d => d.clientId ? setConfig(d) : setError(d.error || 'Configuración inválida.')).catch(() => setError('Error al cargar configuración.')); }, []);
+  const e2eMode = import.meta.env.VITE_E2E_MODE === 'true';
+  const [config, setConfig] = useState<AppConfig | null>(e2eMode ? {
+    clientId: 'ci-e2e',
+    spreadsheetId: 'ci-sheet',
+    sheetName: 'Data',
+    headerRow: 4,
+    searchColumn: 'F',
+  } : null);
+  const [token, setToken] = useState<string | null>(e2eMode ? 'ci-e2e-token' : null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (e2eMode) return;
+    fetch('/api/config').then(r => r.json()).then(d => d.clientId ? setConfig(d) : setError(d.error || 'Configuración inválida.')).catch(() => setError('Error al cargar configuración.'));
+  }, [e2eMode]);
   if (error) return <div className="min-h-screen flex items-center justify-center p-4 text-red-600">{error}</div>;
   if (!config) return <div className="min-h-screen flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-blue-600"/></div>;
+  if (e2eMode) return <MainApp token={token || 'ci-e2e-token'} config={config}/>;
   return <GoogleOAuthProvider clientId={config.clientId}><div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">{token ? <MainApp token={token} config={config}/> : <LoginButton setToken={setToken}/>}</div></GoogleOAuthProvider>;
 }
