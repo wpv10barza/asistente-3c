@@ -8,9 +8,6 @@ import { DeviceCommandStore } from "./server/deviceCommands.js";
 import { registerDeviceApi } from "./server/deviceApi.js";
 import { AnalyticalReviewStore } from "./server/reviewControl.js";
 
-const apiKey = process.env.GEMINI_API_KEY;
-if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
-const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 const deviceCommands = new DeviceCommandStore();
 const reviewStore = new AnalyticalReviewStore();
 
@@ -138,7 +135,12 @@ async function startServer() {
       const detectedHeaders = req.body?.detectedHeaders || {};
       const detectedCatalogs = req.body?.detectedCatalogs || {};
       if (!text) return res.status(400).json({ error: "Text is required" });
-      if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY no esta configurada." });
+
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(503).json({ error: "GEMINI_API_KEY no esta configurada." });
+      }
+      const ai = new GoogleGenAI({ apiKey });
 
       const allowedFields = Object.entries(FIELD_RULES)
         .map(([key, rule]) => `${key}=${rule.column}:${rule.header}`)
