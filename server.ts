@@ -7,6 +7,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { DeviceCommandStore } from "./server/deviceCommands.js";
 import { registerDeviceApi } from "./server/deviceApi.js";
 import { AnalyticalReviewStore } from "./server/reviewControl.js";
+import { registerVisionCapture, runVisionReadNumberAgent } from "./server/visionReadNumber.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
@@ -73,7 +74,11 @@ function normalizeOperationValue(field: FieldKey, rawValue: unknown, detectedCat
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "6mb" }));
+
+  // Numeric vision is intentionally isolated from the normal command parser.
+  // ScaleVision registers one still image only when a numeric read is requested;
+  // Gemini can then call vision_read_number against that short-lived capture.
 
   registerDeviceApi(app, deviceCommands);
 
@@ -129,6 +134,43 @@ async function startServer() {
       res.json(reviewStore.reject(req.params.id));
     } catch (error: any) {
       res.status(404).json({ error: error.message || "Propuesta no encontrada." });
+    }
+  });
+
+  app.post("/api/vision/captures", (req, res) => {
+    try {
+      const capture = registerVisionCapture({
+        base64: String(req.body?.image_base64 || ""),
+        mimeType: req.body?.mime_type ? String(req.body.mime_type) : undefined,
+        localOcrText: req.body?.local_ocr_text ? String(req.body.local_ocr_text) : undefined,
+      });
+      res.status(201).json(capture);
+    } catch (error: any) {
+      console.error("Vision capture error:", error);
+      res.status(400).json({ error: error.message || "No se pudo registrar la captura de visión." });
+    }
+  });
+
+  app.post("/api/vision/agent", async (req, res) => {
+    try {
+      if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY no esta configurada." });
+
+      const prompt = String(req.body?.prompt || "").trim();
+      const captureId = String(req.body?.capture_id || "").trim();
+      if (!prompt) return res.status(400).json({ error: "prompt es obligatorio." });
+      if (!captureId) return res.status(400).json({ error: "capture_id es obligatorio." });
+
+      const result = await runVisionReadNumberAgent(
+        ai,
+        process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        prompt,
+        captureId,
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      console.error("Vision agent error:", error);
+      res.status(400).json({ error: error.message || "No se pudo ejecutar la lectura visual." });
     }
   });
 
