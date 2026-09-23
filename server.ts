@@ -82,6 +82,33 @@ async function startServer() {
 
   registerDeviceApi(app, deviceCommands);
 
+  app.post("/api/vision/session", (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.image_base64) {
+        return res.status(400).json({
+          error: "image_base64 es requerido.",
+        });
+      }
+
+      const visionSessionId = saveVisionFrame({
+        imageBase64: String(body.image_base64),
+        mimeType: String(body.mime_type || "image/jpeg"),
+        unit: String(body.unit || ""),
+      });
+
+      return res.status(201).json({
+        vision_session_id: visionSessionId,
+        expires_in_seconds: 60,
+      });
+    } catch (error: any) {
+      console.error("Vision session error:", error);
+      return res.status(400).json({
+        error: error?.message || "No se pudo registrar la captura visual.",
+      });
+    }
+  });
+
   app.post("/api/vision/read-number", async (req, res) => {
     try {
       const body = req.body || {};
@@ -293,6 +320,7 @@ ${JSON.stringify(text)}`;
 
           functionResponseParts.push({
             functionResponse: {
+              id: call.id,
               name: call.name,
               response: result,
             },
