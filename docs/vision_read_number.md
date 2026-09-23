@@ -14,7 +14,30 @@ La documentación no habilita la función por sí sola. En esta implementación 
 - Puente Gemini: `server.ts`
 - Capturas temporales: memoria del backend, TTL 60 segundos
 
-## Entrada
+## Registrar una captura
+
+Antes de que Gemini pueda llamar la herramienta sobre una captura concreta, el backend puede registrar el frame:
+
+`POST /api/vision/session`
+
+```json
+{
+  "image_base64": "...",
+  "mime_type": "image/jpeg",
+  "unit": "kg"
+}
+```
+
+Respuesta:
+
+```json
+{
+  "vision_session_id": "vision-...",
+  "expires_in_seconds": 60
+}
+```
+
+## Entrada de la herramienta
 
 ```json
 {
