@@ -7,6 +7,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { DeviceCommandStore } from "./server/deviceCommands.js";
 import { registerDeviceApi } from "./server/deviceApi.js";
 import { AnalyticalReviewStore } from "./server/reviewControl.js";
+import {
+  executeVisionReadNumber,
+  saveVisionFrame,
+  VISION_READ_NUMBER_FUNCTION,
+} from "./server/visionTools.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
@@ -73,9 +78,72 @@ function normalizeOperationValue(field: FieldKey, rawValue: unknown, detectedCat
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "8mb" }));
 
   registerDeviceApi(app, deviceCommands);
+
+  app.post("/api/vision/session", (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.image_base64) {
+        return res.status(400).json({
+          error: "image_base64 es requerido.",
+        });
+      }
+
+      const visionSessionId = saveVisionFrame({
+        imageBase64: String(body.image_base64),
+        mimeType: String(body.mime_type || "image/jpeg"),
+        unit: String(body.unit || ""),
+      });
+
+      return res.status(201).json({
+        vision_session_id: visionSessionId,
+        expires_in_seconds: 60,
+      });
+    } catch (error: any) {
+      console.error("Vision session error:", error);
+      return res.status(400).json({
+        error: error?.message || "No se pudo registrar la captura visual.",
+      });
+    }
+  });
+
+  app.post("/api/vision/read-number", async (req, res) => {
+    try {
+      const body = req.body || {};
+      let sessionId = String(body.session_id || "").trim();
+
+      if (!sessionId && body.image_base64) {
+        sessionId = saveVisionFrame({
+          imageBase64: String(body.image_base64),
+          mimeType: String(body.mime_type || "image/jpeg"),
+          unit: String(body.unit || ""),
+        });
+      }
+
+      if (!sessionId) {
+        return res.status(400).json({
+          status: "not_readable",
+          number_text: "",
+          value: null,
+          reason: "Falta image_base64 o session_id.",
+        });
+      }
+
+      const result = await executeVisionReadNumber(sessionId);
+      return res.json(result);
+    } catch (error: any) {
+      console.error("Vision read-number error:", error);
+      return res.status(500).json({
+        status: "not_readable",
+        number_text: "",
+        value: null,
+        reason:
+          error?.message || "No se pudo ejecutar la lectura visual.",
+      });
+    }
+  });
 
   app.get("/api/config", (_req, res) => {
     try {
@@ -163,6 +231,8 @@ REGLAS INMUTABLES:
 - Frecuencia debe ser un numero entero mayor o igual a 1.
 - Si falta tarea o valor, devuelve requiere_revision=true y explica el motivo.
 - Puedes devolver varias operaciones para una misma tarea.
+- Si existe una captura visual actual y el comando necesita leer un número de ella, usa la herramienta vision_read_number.
+- No sustituyas una lectura visual ilegible con estimaciones, memoria, contexto o el valor anterior.
 
 ENCABEZADOS DETECTADOS EN LA HOJA:
 ${JSON.stringify(detectedHeaders)}
@@ -173,36 +243,103 @@ ${JSON.stringify(detectedCatalogs)}
 COMANDO:
 ${JSON.stringify(text)}`;
 
-      const response = await ai.models.generateContent({
-        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0,
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              tarea_buscada: { type: Type.STRING },
-              tarea_id: { type: Type.STRING },
-              operaciones: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    campo: { type: Type.STRING, enum: Object.keys(FIELD_RULES) },
-                    valor: { type: Type.STRING },
-                    razon: { type: Type.STRING }
+      const visionSessionId =
+        String(req.body?.vision_session_id || "").trim();
+
+      let contents: any[] = [
+        {
+          role: "user",
+          parts: [{ text: prompt }],
+        },
+      ];
+
+      const geminiConfig: any = {
+        responseMimeType: "application/json",
+        temperature: 0,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            tarea_buscada: { type: Type.STRING },
+            tarea_id: { type: Type.STRING },
+            operaciones: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  campo: {
+                    type: Type.STRING,
+                    enum: Object.keys(FIELD_RULES),
                   },
-                  required: ["campo", "valor"]
-                }
+                  valor: { type: Type.STRING },
+                  razon: { type: Type.STRING },
+                },
+                required: ["campo", "valor"],
               },
-              requiere_revision: { type: Type.BOOLEAN },
-              motivo_revision: { type: Type.STRING }
             },
-            required: ["tarea_buscada", "operaciones", "requiere_revision"]
-          }
-        }
+            requiere_revision: { type: Type.BOOLEAN },
+            motivo_revision: { type: Type.STRING },
+          },
+          required: [
+            "tarea_buscada",
+            "operaciones",
+            "requiere_revision",
+          ],
+        },
+      };
+
+      if (visionSessionId) {
+        geminiConfig.tools = [
+          {
+            functionDeclarations: [VISION_READ_NUMBER_FUNCTION],
+          },
+        ];
+      }
+
+      let response = await ai.models.generateContent({
+        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        contents,
+        config: geminiConfig,
       });
+
+      for (let iteration = 0; iteration < 2; iteration++) {
+        const functionCalls = (response as any).functionCalls || [];
+
+        if (!functionCalls.length) break;
+
+        const modelContent = (response as any).candidates?.[0]?.content;
+        if (modelContent) contents.push(modelContent);
+
+        const functionResponseParts: any[] = [];
+
+        for (const call of functionCalls) {
+          if (call.name !== "vision_read_number") continue;
+
+          const result = await executeVisionReadNumber(
+            String(call.args?.vision_session_id || visionSessionId)
+          );
+
+          functionResponseParts.push({
+            functionResponse: {
+              id: call.id,
+              name: call.name,
+              response: result,
+            },
+          });
+        }
+
+        if (!functionResponseParts.length) break;
+
+        contents.push({
+          role: "user",
+          parts: functionResponseParts,
+        });
+
+        response = await ai.models.generateContent({
+          model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+          contents,
+          config: geminiConfig,
+        });
+      }
 
       const parsed = JSON.parse(response.text || "{}");
       const validated = (parsed.operaciones || []).map((op: { campo: FieldKey; valor: unknown; razon?: string }) => {
