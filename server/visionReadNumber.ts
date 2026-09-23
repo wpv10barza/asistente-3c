@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { FunctionCallingConfigMode, GoogleGenAI, Type } from "@google/genai";
 
 const MAX_CAPTURE_BYTES = 1_500_000;
 const CAPTURE_TTL_MS = 60_000;
@@ -225,7 +225,7 @@ Debes usar vision_read_number para obtener la lectura. No generes un número por
       }],
       toolConfig: {
         functionCallingConfig: {
-          mode: "ANY",
+          mode: FunctionCallingConfigMode.ANY,
           allowedFunctionNames: ["vision_read_number"],
         },
       },
