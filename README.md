@@ -86,3 +86,19 @@ chmod +x scripts/run-wsl.sh
 El servidor carga `.env` mediante `dotenv/config` y escucha en `0.0.0.0:3000`.
 Desde el ESP‑Hi use la IP LAN del equipo, mientras que las pruebas ejecutadas
 dentro de WSL pueden utilizar `http://127.0.0.1:3000`.
+
+## Lectura numérica visual bajo demanda
+
+ScaleVision puede registrar una captura puntual y solicitar una lectura numérica mediante la herramienta callable `vision_read_number`. Esta ruta está separada del parser `/api/extract`: no ejecuta visión por cada fotograma.
+
+Flujo:
+
+1. ScaleVision captura una imagen solo cuando se solicita una lectura numérica.
+2. `POST /api/vision/captures` registra temporalmente la captura.
+3. `POST /api/vision/agent` inicia Gemini con la declaración callable `vision_read_number`.
+4. El ejecutor `server/visionReadNumber.ts` vuelve a procesar la imagen con el mismo `GEMINI_MODEL`, con salida estructurada.
+5. Solo `status=READ` con un número sintácticamente válido se considera lectura autoritativa. `NOT_LEGIBLE` y `CONFLICT` no producen un valor inferido.
+
+Contrato: `contract/vision-read-number-v1.json`.
+
+En desarrollo, ScaleVision puede apuntar a `http://10.0.2.2:3000` desde un emulador Android. Para un dispositivo físico, configure `-PvisionBackendUrl=http://IP_LAN_DEL_PC:3000`. Producción debe usar HTTPS.
