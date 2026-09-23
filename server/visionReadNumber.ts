@@ -264,6 +264,7 @@ Debes usar vision_read_number para obtener la lectura. No generes un número por
         functionResponse: {
           name: "vision_read_number",
           response: toolResult,
+          ...(functionCall.id ? { id: functionCall.id } : {}),
         },
       }],
     },
