@@ -27,3 +27,36 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - name: Run production server startup contract
+        env:
+          GEMINI_API_KEY: ci-placeholder
+          ESP32_API_TOKEN: ci-e2e-token
+          PORT: "3000"
+          ALLOW_INSECURE_DEVICE_API: "false"
+        run: |
+          set -euo pipefail
+          rm -f ci-server.log ci-server.pid
+          nohup npm run start > ci-server.log 2>&1 &
+          echo $! > ci-server.pid
+          cleanup() {
+            test ! -f ci-server.pid || kill "$(cat ci-server.pid)" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          python - <<'PY'
+          import time
+          import urllib.request
+          last = None
+          for _ in range(30):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:3000/api/device/v1/health", timeout=2) as response:
+                      assert response.status == 200
+                      print(response.read().decode())
+                      break
+              except Exception as exc:
+                  last = exc
+                  time.sleep(1)
+          else:
+              raise SystemExit(f"Server health did not come up: {last}")
+          PY
+          grep -F 'mDNS: advertising _3c._tcp as 3c-backend.local:3000' ci-server.log
+          cat ci-server.log
