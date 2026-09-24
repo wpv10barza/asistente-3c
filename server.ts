@@ -7,6 +7,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { DeviceCommandStore } from "./server/deviceCommands.js";
 import { registerDeviceApi } from "./server/deviceApi.js";
 import { AnalyticalReviewStore } from "./server/reviewControl.js";
+import { startBackendMdnsAdvertisement } from "./server/mdns.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
@@ -243,7 +244,26 @@ ${JSON.stringify(text)}`;
     app.get("*all", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => console.log(`Server running on http://0.0.0.0:${PORT}`));
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+
+    try {
+      startBackendMdnsAdvertisement(PORT);
+      console.log(
+        `mDNS: advertising _3c._tcp as 3c-backend.local:${PORT}`,
+      );
+    } catch (error) {
+      console.error("mDNS: failed to advertise _3c._tcp", error);
+    }
+  });
+
+  const shutdown = async (signal: string) => {
+    console.log(`Shutdown: ${signal}`);
+    server.close(() => process.exit(0));
+  };
+
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 startServer();
