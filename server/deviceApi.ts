@@ -13,6 +13,9 @@ export const DEVICE_API_PATHS = {
 type DeviceApiEnvironment = {
   ESP32_API_TOKEN?: string;
   ALLOW_INSECURE_DEVICE_API?: string;
+  PORT?: string;
+  MDNS_SERVICE?: string;
+  MDNS_HOST?: string;
 };
 
 function authorizeDeviceRequest(
@@ -55,6 +58,11 @@ export function registerDeviceApi(
       requires_human_confirmation: true,
       protocol_version: "1.0",
       supports_status_polling: true,
+      discovery: {
+        service: `_${environment.MDNS_SERVICE || "3c"}._tcp`,
+        logical_host: environment.MDNS_HOST || "3c-backend.local",
+        port: Number(environment.PORT || 3000),
+      },
     });
   });
 

@@ -6,15 +6,28 @@
   "status_path": "/api/device/v1/commands/{command_id}",
   "authentication_header": "X-3C-Device-Token",
   "request": {
-    "required": ["device_id", "request_id", "text"],
+    "required": [
+      "device_id",
+      "request_id",
+      "text"
+    ],
     "device_id_max_length": 64,
     "request_id_max_length": 96,
     "text_max_length": 1000
   },
-  "accepted_status_codes": [200, 202],
+  "accepted_status_codes": [
+    200,
+    202
+  ],
   "accepted_state": "pending_confirmation",
   "device_status_polling": true,
   "device_status_authentication": true,
   "direct_sheet_write": false,
-  "requires_human_confirmation": true
+  "requires_human_confirmation": true,
+  "discovery": {
+    "service_type": "_3c._tcp",
+    "protocol": "tcp",
+    "logical_host": "3c-backend.local",
+    "port_dynamic": true
+  }
 }

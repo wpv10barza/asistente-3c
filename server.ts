@@ -7,6 +7,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { DeviceCommandStore } from "./server/deviceCommands.js";
 import { registerDeviceApi } from "./server/deviceApi.js";
 import { AnalyticalReviewStore } from "./server/reviewControl.js";
+import { startBackendDiscovery } from "./server/backendDiscovery.js";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) console.warn("GEMINI_API_KEY no esta configurada.");
@@ -243,7 +244,44 @@ ${JSON.stringify(text)}`;
     app.get("*all", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => console.log(`Server running on http://0.0.0.0:${PORT}`));
+  let stopBackendDiscovery: (() => Promise<void>) | null = null;
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+
+    try {
+      stopBackendDiscovery = startBackendDiscovery(PORT, process.env);
+      console.log(
+        `mDNS 3C backend: _${process.env.MDNS_SERVICE || "3c"}._tcp -> ${process.env.MDNS_HOST || "3c-backend.local"}:${PORT}`,
+      );
+    } catch (error) {
+      console.error("No se pudo publicar el servicio mDNS 3C:", error);
+      if (process.env.MDNS_REQUIRED === "true") {
+        server.close(() => process.exit(1));
+      }
+    }
+  });
+
+  const shutdown = async (signal: string) => {
+    console.log(`Recibido ${signal}; cerrando servidor 3C.`);
+    try {
+      if (stopBackendDiscovery) {
+        await stopBackendDiscovery();
+      }
+    } catch (error) {
+      console.error("Error cerrando mDNS 3C:", error);
+      process.exitCode = 1;
+    }
+    server.close((error) => {
+      if (error) {
+        console.error("Error cerrando servidor 3C:", error);
+        process.exitCode = 1;
+      }
+    });
+  };
+
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 startServer();
