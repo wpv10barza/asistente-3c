@@ -244,11 +244,13 @@ ${JSON.stringify(text)}`;
     app.get("*all", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
+  let stopBackendDiscovery: (() => Promise<void>) | null = null;
+
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
 
     try {
-      startBackendDiscovery(PORT, process.env);
+      stopBackendDiscovery = startBackendDiscovery(PORT, process.env);
       console.log(
         `mDNS 3C backend: _${process.env.MDNS_SERVICE || "3c"}._tcp -> ${process.env.MDNS_HOST || "3c-backend.local"}:${PORT}`,
       );
@@ -260,8 +262,16 @@ ${JSON.stringify(text)}`;
     }
   });
 
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     console.log(`Recibido ${signal}; cerrando servidor 3C.`);
+    try {
+      if (stopBackendDiscovery) {
+        await stopBackendDiscovery();
+      }
+    } catch (error) {
+      console.error("Error cerrando mDNS 3C:", error);
+      process.exitCode = 1;
+    }
     server.close((error) => {
       if (error) {
         console.error("Error cerrando servidor 3C:", error);
@@ -270,8 +280,8 @@ ${JSON.stringify(text)}`;
     });
   };
 
-  process.once("SIGINT", () => shutdown("SIGINT"));
-  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 startServer();
