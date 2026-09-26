@@ -29,3 +29,20 @@ jobs:
       - name: Verify backend mDNS discovery contract
         run: node --import tsx --test test/backendDiscovery.test.ts
       - run: npm run build
+      - name: Verify production start socket
+        run: |
+          set -euo pipefail
+          rm -f .ci-start.log
+          npm start > .ci-start.log 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 2 http://127.0.0.1:3000/api/device/v1/health >/tmp/ci-health.json; then
+              cat /tmp/ci-health.json
+              break
+            fi
+            sleep 1
+          done
+          grep -q 'Server running on http://0.0.0.0:3000' .ci-start.log || { cat .ci-start.log; exit 1; }
+          ! grep -q 'Port 24678 is already in use' .ci-start.log || { cat .ci-start.log; exit 1; }
+          curl -fsS --max-time 2 http://127.0.0.1:3000/api/device/v1/health >/dev/null
