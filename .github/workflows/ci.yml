@@ -26,4 +26,6 @@ jobs:
       - run: node -e "JSON.parse(require('fs').readFileSync('contract/device-command-v1.json','utf8'))"
       - run: npm run lint
       - run: npm test
+      - name: Verify backend mDNS discovery contract
+        run: node --import tsx --test test/backendDiscovery.test.ts
       - run: npm run build
