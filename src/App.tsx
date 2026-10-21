@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
 import { Mic, MicOff, LogIn, CheckCircle2, AlertCircle, Loader2, Send } from 'lucide-react';
+import { sheetValuesMatch, reportVerifiedCell } from './sheetReadback';
 
 type AppConfig = { clientId: string; spreadsheetId: string; sheetName: string; headerRow: number; searchColumn: string };
 type Operation = { campo: string; columna_actualizar: string; encabezado: string; valor_actualizar: string | number; razon?: string };
@@ -129,26 +130,81 @@ function MainApp({ token, config }: { token: string; config: AppConfig }) {
 
   const confirmPendingPlan = async () => {
     if (!pendingPlan) return;
-    setStatus({ type: 'loading', message: `Aplicando ${pendingPlan.operations.length} cambio(s) en la fila ${pendingPlan.row}...` });
+    setStatus({ type: 'loading', message: 'Aprobando y verificando los valores en Google Sheets...' });
+    let writeStarted = false;
     try {
-      for (const operation of pendingPlan.operations) {
-        await sheetsFetch(`${operation.columna_actualizar}${pendingPlan.row}`, { method: 'PUT', body: JSON.stringify({ values: [[operation.valor_actualizar]] }) });
+      // Before approval: reread headers and the identity cell, not only stale preview state.
+      const headerData = await sheetsFetch(`A${config.headerRow}:F${config.headerRow}`);
+      if (headerData.values?.[0]?.[4] !== 'TareaId' || headerData.values?.[0]?.[5] !== 'Nombre') {
+        throw new Error('Encabezados E/F distintos; no se realizó ningún cambio.');
+      }
+      const operations = pendingPlan.operations;
+      const uniqueCells = new Set(operations.map(op => op.columna_actualizar.toUpperCase()));
+      if (uniqueCells.size !== operations.length) {
+        throw new Error('Columnas repetidas en la propuesta; revise antes de escribir.');
+      }
+      const inspected = [];
+      for (const operation of operations) {
+        const column = operation.columna_actualizar.toUpperCase();
+        if (!['B', 'C', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'].includes(column)) {
+          throw new Error(`Columna bloqueada: ${column}`);
+        }
+        const cell = `${column}${pendingPlan.row}`;
+        const response = await sheetsFetch(cell);
+        inspected.push({
+          cell, field: operation.encabezado,
+          before: response.values?.[0]?.[0] ?? '',
+          desired: operation.valor_actualizar,
+        });
       }
       if (pendingPlan.reviewProposalId) {
-        const reviewResponse = await fetch(`/api/review/proposals/${encodeURIComponent(pendingPlan.reviewProposalId)}/approve`, { method: 'POST' });
-        const reviewData = await reviewResponse.json();
-        if (!reviewResponse.ok) throw new Error(reviewData.error || 'No se pudo cerrar la revisión analítica.');
+        const approvedResponse = await fetch(
+          `/api/review/proposals/${encodeURIComponent(pendingPlan.reviewProposalId)}/approve`,
+          { method: 'POST' },
+        );
+        const reviewData = await approvedResponse.json();
+        if (!approvedResponse.ok) {
+          throw new Error(reviewData.error || 'No se pudo aprobar la revisión analítica.');
+        }
       }
-      const message = `Fila ${pendingPlan.row} actualizada: ${pendingPlan.matched}. Se aplicaron ${pendingPlan.operations.length} cambio(s).`;
-      setLastOperations(pendingPlan.operations);
+      const verified = [];
+      for (const change of inspected) {
+        writeStarted = true;
+        const updateResponse = await sheetsFetch(change.cell, {
+          method: 'PUT', body: JSON.stringify({ values: [[change.desired]] }),
+        });
+        const count = Number(updateResponse.updatedCells ?? 0);
+        if (count !== 1) {
+          throw new Error(`${change.cell}: Google Sheets no confirmó exactamente una celda escrita.`);
+        }
+        const readBack = await sheetsFetch(change.cell);
+        const current = readBack.values?.[0]?.[0] ?? '';
+        if (!sheetValuesMatch(change.desired, current)) {
+          throw new Error(`${change.cell}: lectura posterior no coincide con el valor esperado.`);
+        }
+        verified.push(reportVerifiedCell(change.cell, change.field, change.before, current));
+      }
+      const summary = verified.map(change =>
+        `${change.field} (${change.cell}): ${change.before} → ${change.after}${change.changed ? '' : ' (sin cambio previo)'}`
+      ).join(' | ');
+      const message = `APLICADO Y VERIFICADO fila ${pendingPlan.row}: ${summary}`;
+      setLastOperations(operations);
       await reportDeviceResult(pendingPlan.externalCommandId, 'applied', message);
       setPendingPlan(null);
       setStatus({ type: 'success', message });
     } catch (error: any) {
-      if (pendingPlan.reviewProposalId) {
-        await fetch(`/api/review/proposals/${encodeURIComponent(pendingPlan.reviewProposalId)}/reject`, { method: 'POST' }).catch(() => undefined);
+      // An attempted write might have partially changed Sheets. Never label it rejected.
+      if (!writeStarted && pendingPlan.reviewProposalId) {
+        await fetch(
+          `/api/review/proposals/${encodeURIComponent(pendingPlan.reviewProposalId)}/reject`,
+          { method: 'POST' },
+        ).catch(() => undefined);
       }
-      console.error(error); setStatus({ type: 'error', message: error.message || 'No se pudieron aplicar los cambios.' });
+      console.error(error);
+      setStatus({ type: 'error',
+        message: (writeStarted ? 'POSIBLE ESCRITURA PARCIAL: comprobar Sheets manualmente. ' : 'SIN ESCRITURA. ') +
+          (error.message || 'No se pudieron verificar los cambios.'),
+      });
     }
   };
 
